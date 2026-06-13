@@ -1,0 +1,167 @@
+Ques:-
+
+A xFusionCorp Industries data scientist has trained three candidate models on the same problem and logged them to the model-comparison experiment. Your task is to review the candidates side by side in the MLflow UI and explicitly mark the winning run so downstream tooling can pick it up.
+
+1. The MLflow tracking server is already running on port 5000 and the model-comparison experiment has been pre-populated with three runs, each named after its algorithm (RandomForest, GradientBoosting, LogisticRegression) and carrying accuracy and f1_score metrics. The runs can be viewed via the MLflow UI button → model-comparison experiment.
+
+2. Using the MLflow UI, inspect the three runs side by side and identify the winner by metrics.f1_score.
+
+	-> The run with the highest f1_score must carry a run-level tag: key production-candidate, value true.
+	-> Neither of the other two runs may carry a production-candidate tag.
+
+The result can be confirmed in the MLflow UI: the model-comparison experiment lists three runs, and only the top-f1_score run shows the production-candidate tag on its detail page.
+
+
+
+
+Soln:-
+
+Step 1: Navigate to the directory
+
+cd /root/code
+
+
+
+Step 2: Verify the existing script named "seed_model.py"
+
+"""Seed the `model-comparison` experiment with three runs whose
+model types differ in name only. Each run logs a DummyClassifier
+artefact fitted on a two-row deterministic array and advertises
+hardcoded synthetic `accuracy` and `f1_score` metrics.
+
+No real training takes place. The lab teaches the MLflow
+Compare-view workflow (multi-select runs, inspect side by side,
+tag the winner), not model quality (§2.5). Metric values are
+chosen so that one run is unambiguously best on `f1_score`:
+
+  RandomForest        → f1=0.85
+  GradientBoosting    → f1=0.91   ← top
+  LogisticRegression  → f1=0.78
+"""
+import sys
+import numpy as np
+import mlflow
+import mlflow.sklearn
+from mlflow import MlflowClient
+from sklearn.dummy import DummyClassifier
+
+TRACKING_URI = "http://localhost:5000"
+EXPERIMENT_NAME = "model-comparison"
+
+SEED_RUNS = [
+    {
+        "name": "RandomForest",
+        "params": {"n_estimators": 50, "max_depth": 3},
+        "metrics": {"accuracy": 0.83, "f1_score": 0.85},
+    },
+    {
+        "name": "GradientBoosting",
+        "params": {"n_estimators": 100, "max_depth": 3},
+        "metrics": {"accuracy": 0.88, "f1_score": 0.91},
+    },
+    {
+        "name": "LogisticRegression",
+        "params": {"max_iter": 200},
+        "metrics": {"accuracy": 0.76, "f1_score": 0.78},
+    },
+]
+
+
+def _dummy_fit():
+    X = np.array([[0.0], [1.0]])
+    y = np.array([0, 1])
+    return DummyClassifier(strategy="most_frequent").fit(X, y)
+
+
+def main():
+    mlflow.set_tracking_uri(TRACKING_URI)
+    client = MlflowClient()
+
+    existing = client.get_experiment_by_name(EXPERIMENT_NAME)
+    if existing is not None and len(client.search_runs([existing.experiment_id])) >= len(SEED_RUNS):
+        # Re-spawn safety: seed already populated.
+        sys.exit(0)
+
+    mlflow.set_experiment(EXPERIMENT_NAME)
+
+    for cfg in SEED_RUNS:
+        with mlflow.start_run(run_name=cfg["name"]):
+            mlflow.log_param("model_type", cfg["name"])
+            mlflow.log_params(cfg["params"])
+            for key, value in cfg["metrics"].items():
+                mlflow.log_metric(key, value)
+            mlflow.sklearn.log_model(_dummy_fit(), name="model")
+
+
+if __name__ == "__main__":
+    main()
+	
+	
+	
+Step 3: Create the new python script named "mlflow_production_candidate.py" for doing the tasks mentioned in comments form in the script below
+
+import mlflow
+from mlflow.tracking import MlflowClient
+
+# Connect to MLflow tracking server
+client = MlflowClient(tracking_uri="http://localhost:5000")
+
+# Get the experiment by name
+experiment = client.get_experiment_by_name("model-comparison")
+
+# List all runs in the experiment
+runs = client.search_runs(
+    experiment_ids=[experiment.experiment_id],
+    filter_string="",
+    run_view_type=mlflow.entities.ViewType.ACTIVE_ONLY,
+    max_results=100
+)
+
+# Find the run with the highest f1_score
+best_run = max(runs, key=lambda r: r.data.metrics.get("f1_score", float("-inf")))
+
+print("Winning run:", best_run.info.run_id, best_run.data.metrics)
+
+# Apply the production-candidate tag to the winning run
+client.set_tag(best_run.info.run_id, "production-candidate", "true")
+
+# Remove the tag from other runs if present
+for run in runs:
+    if run.info.run_id != best_run.info.run_id:
+        if "production-candidate" in run.data.tags:
+            client.delete_tag(run.info.run_id, "production-candidate")
+
+# Verification step
+print("\nVerification:")
+for run in runs:
+    tags = client.get_run(run.info.run_id).data.tags
+    print(
+        f"Run: {run.info.run_id}, "
+        f"Algorithm: {tags.get('mlflow.runName')}, "
+        f"f1_score: {run.data.metrics.get('f1_score')}, "
+        f"production-candidate: {tags.get('production-candidate')}"
+    )
+	
+---> Working of the above script
+
+1: Connects to MLflow and fetches all runs in the model-comparison experiment.
+2: Finds the run with the highest f1_score.
+3: Tags that run with production-candidate: true.
+4: Checks other runs; only deletes the tag if it exists (avoids your error).
+5: Prints a verification summary showing each run’s algorithm, f1_score, and whether the tag is present.
+
+	
+	
+Step 4: Execute the script mentioned above using the below command
+
+python3 mlflow_production_candidate.py
+
+---> Output:
+
+Winning run: f95bca14e0bf433db13846498717e263 {'accuracy': 0.88, 'f1_score': 0.91}
+
+Verification:
+Run: 9e9dea351a36438a81f17aa4c1c3a5aa, Algorithm: LogisticRegression, f1_score: 0.78, production-candidate: None
+Run: f95bca14e0bf433db13846498717e263, Algorithm: GradientBoosting, f1_score: 0.91, production-candidate: true
+Run: 948328c982174e919d147956cead640d, Algorithm: RandomForest, f1_score: 0.85, production-candidate: None
+
